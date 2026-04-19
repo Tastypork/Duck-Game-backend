@@ -1,0 +1,1 @@
+"""Duck Game backend package."""

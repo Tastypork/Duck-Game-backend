@@ -1,0 +1,28 @@
+[project]
+name = "duck-game-backend"
+version = "0.1.0"
+description = "HTTP API for Duck game (shared by Discord bot and web clients)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "sqlalchemy>=2.0.36",
+  "psycopg[binary]>=3.2.0",
+  "httpx>=0.27.0",
+  "pydantic-settings>=2.6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "ruff>=0.8.0"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["duck_game_backend*"]
+
+[tool.setuptools.package-data]
+duck_game_backend = ["data/*.json", "static/game/*"]

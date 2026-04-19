@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.git/
+.gitignore
+.env
+.env.example
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+*.log
+log.txt
+duck_game_backend/static/user_html/*.html
