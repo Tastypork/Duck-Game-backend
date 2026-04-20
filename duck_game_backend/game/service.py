@@ -191,39 +191,60 @@ class DuckGameService:
         user_id: str,
         exclude_duck_ids: set[str] | None = None,
     ) -> str | None:
+        """Pick a random stealable duck using ``DuckRow.owner_id`` (kept in sync with inventory)."""
+        stmt = select(DuckRow.duck_id).where(
+            DuckRow.guild_id == guild_id,
+            DuckRow.owner_id == user_id,
+            DuckRow.shiny.is_(False),
+            DuckRow.rarity.notin_(("Legendary", "Mythic")),
+        )
         exclude_duck_ids = exclude_duck_ids or set()
-        eligible: list[str] = []
-        for duck_id in self.get_user_duck_ids(guild_id, user_id):
-            if duck_id in exclude_duck_ids:
-                continue
-            duck_row = self.get_duck(guild_id, duck_id)
-            if duck_row and self.is_stealable_duck(duck_row):
-                eligible.append(duck_id)
-        if not eligible:
+        if exclude_duck_ids:
+            stmt = stmt.where(DuckRow.duck_id.notin_(exclude_duck_ids))
+        duck_ids = list(self.session.execute(stmt).scalars().all())
+        if not duck_ids:
             return None
-        return random.choice(eligible)
+        return random.choice(duck_ids)
 
     def get_random_user_with_stealable_ducks(
-        self, guild_id: str, exclude_user_id: str | None = None
+        self,
+        guild_id: str,
+        exclude_user_id: str | None = None,
+        allowed_user_ids: set[str] | None = None,
     ) -> tuple[str, str] | None:
-        rows = self.session.execute(select(UserRow).where(UserRow.guild_id == guild_id)).scalars().all()
-        candidates: list[tuple[str, list[str]]] = []
-        for row in rows:
-            uid = row.user_id
-            if exclude_user_id and uid == exclude_user_id:
-                continue
-            duck_ids = json.loads(row.ducks_json) if row.ducks_json else []
-            eligible_ids: list[str] = []
-            for duck_id in duck_ids:
-                dr = self.get_duck(guild_id, duck_id)
-                if dr and self.is_stealable_duck(dr):
-                    eligible_ids.append(duck_id)
-            if eligible_ids:
-                candidates.append((uid, eligible_ids))
-        if not candidates:
+        """Pick a random opponent with a stealable duck: uniform user, then uniform duck for that user.
+
+        Uses indexed-friendly queries on ``ducks`` instead of loading every guild user and each duck row.
+        """
+        base_conds = [
+            DuckRow.guild_id == guild_id,
+            DuckRow.owner_id.is_not(None),
+            DuckRow.shiny.is_(False),
+            DuckRow.rarity.notin_(("Legendary", "Mythic")),
+        ]
+        if exclude_user_id:
+            base_conds.append(DuckRow.owner_id != exclude_user_id)
+        if allowed_user_ids is not None:
+            if not allowed_user_ids:
+                return None
+            base_conds.append(DuckRow.owner_id.in_(allowed_user_ids))
+
+        owner_stmt = select(DuckRow.owner_id).where(*base_conds).distinct()
+        owner_ids = [r[0] for r in self.session.execute(owner_stmt).all()]
+        if not owner_ids:
             return None
-        random_user_id, duck_ids = random.choice(candidates)
-        return (random_user_id, random.choice(duck_ids))
+        chosen_owner = random.choice(owner_ids)
+
+        duck_stmt = select(DuckRow.duck_id).where(
+            DuckRow.guild_id == guild_id,
+            DuckRow.owner_id == chosen_owner,
+            DuckRow.shiny.is_(False),
+            DuckRow.rarity.notin_(("Legendary", "Mythic")),
+        )
+        duck_ids = list(self.session.execute(duck_stmt).scalars().all())
+        if not duck_ids:
+            return None
+        return (chosen_owner, random.choice(duck_ids))
 
     def loss_eligible_duck_ids(self, guild_id: str, user_id: str) -> list[str]:
         out: list[str] = []
@@ -486,7 +507,12 @@ class DuckGameService:
         row.battle_streak = streak
         self.session.commit()
 
-    def duck_battle(self, user_id: str, guild_id: int) -> dict[str, Any]:
+    def duck_battle(
+        self,
+        user_id: str,
+        guild_id: int,
+        steal_eligible_user_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
         """Random PvP battle: invoker's stealable duck vs another player's; winner takes loser's fighter."""
         gid = normalize_guild_id(guild_id)
         if self.zay.active(gid, user_id):
@@ -513,7 +539,9 @@ class DuckGameService:
                 "message": "You need at least one **non-shiny, non-Legendary/Mythic** duck to battle with.",
             }
 
-        opp = self.get_random_user_with_stealable_ducks(gid, exclude_user_id=user_id)
+        opp = self.get_random_user_with_stealable_ducks(
+            gid, exclude_user_id=user_id, allowed_user_ids=steal_eligible_user_ids
+        )
         if not opp:
             return {
                 "kind": "battle_no_opponent",
@@ -641,6 +669,7 @@ class DuckGameService:
         user_id: str,
         guild_id: int | None,
         channel_id: int | None,
+        steal_eligible_user_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Main !duck flow."""
         gid = normalize_guild_id(guild_id)
@@ -649,7 +678,9 @@ class DuckGameService:
             if pending:
                 rev = self.handle_revenge_battle(gid, user_id, pending)
                 if rev.get("kind") == "revenge_skip":
-                    return self.duck_catch(user_id, guild_id, channel_id)
+                    return self.duck_catch(
+                        user_id, guild_id, channel_id, steal_eligible_user_ids=steal_eligible_user_ids
+                    )
                 return rev
 
             if self.zay.active(gid, user_id):
@@ -722,7 +753,9 @@ class DuckGameService:
             steal_result = None
             if will_steal:
                 steal_result = self.get_random_user_with_stealable_ducks(
-                    gid, exclude_user_id=new_owner_id
+                    gid,
+                    exclude_user_id=new_owner_id,
+                    allowed_user_ids=steal_eligible_user_ids,
                 )
 
             theft_text = ""
@@ -890,7 +923,7 @@ class DuckGameService:
             "rarity": rarity_out,
         }
 
-    def leaderboard(self, guild_id: str) -> dict[str, Any]:
+    def leaderboard(self, guild_id: str, eligible_user_ids: set[str] | None = None) -> dict[str, Any]:
         rows = self.session.execute(select(UserRow).where(UserRow.guild_id == guild_id)).scalars().all()
         by_user: dict[str, UserRow] = {}
         leaderboard_list: list[tuple[str, int]] = []
@@ -899,6 +932,8 @@ class DuckGameService:
             duck_ids = json.loads(row.ducks_json) if row.ducks_json else []
             c = len(duck_ids)
             total_ducks += c
+            if eligible_user_ids is not None and row.user_id not in eligible_user_ids:
+                continue
             leaderboard_list.append((row.user_id, c))
             by_user[row.user_id] = row
         leaderboard_list.sort(key=lambda x: x[1], reverse=True)

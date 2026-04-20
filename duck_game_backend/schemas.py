@@ -9,10 +9,18 @@ class DuckCatchBody(BaseModel):
     guild_id: int | None = None
     channel_id: int | None = None
     source: Literal["web", "bot"] | None = None
+    guild_member_ids: list[int] | None = None
 
 
 class DuckBattleBody(BaseModel):
     guild_id: int | None = None
+    guild_member_ids: list[int] | None = None
+
+
+class LeaderboardBody(BaseModel):
+    """When ``guild_member_ids`` is set, rank only those users (e.g. current server members)."""
+
+    guild_member_ids: list[int] | None = None
 
 
 class GiveBody(BaseModel):

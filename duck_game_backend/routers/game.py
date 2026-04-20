@@ -20,7 +20,14 @@ from duck_game_backend.routers._deps import (
     require_user_id,
     resolve_guild_int,
 )
-from duck_game_backend.schemas import DuckBattleBody, DuckCatchBody, DuckCatchResponse, GiveBody, ReleaseBody
+from duck_game_backend.schemas import (
+    DuckBattleBody,
+    DuckCatchBody,
+    DuckCatchResponse,
+    GiveBody,
+    LeaderboardBody,
+    ReleaseBody,
+)
 
 LOGGER = logging.getLogger("duck_game.routers.game")
 
@@ -113,7 +120,10 @@ def duck_catch(
         global_name=identity.global_name,
         avatar_hash=identity.avatar_hash,
     )
-    result = svc.duck_catch(uid, guild_int, body.channel_id)
+    steal_ids: set[str] | None = None
+    if body.guild_member_ids is not None:
+        steal_ids = {str(i) for i in body.guild_member_ids}
+    result = svc.duck_catch(uid, guild_int, body.channel_id, steal_eligible_user_ids=steal_ids)
     if (
         body.source == "web"
         and guild_int is not None
@@ -157,7 +167,10 @@ def duck_battle(
         global_name=identity.global_name,
         avatar_hash=identity.avatar_hash,
     )
-    return DuckCatchResponse(result=svc.duck_battle(uid, guild_int))
+    steal_ids: set[str] | None = None
+    if body.guild_member_ids is not None:
+        steal_ids = {str(i) for i in body.guild_member_ids}
+    return DuckCatchResponse(result=svc.duck_battle(uid, guild_int, steal_eligible_user_ids=steal_ids))
 
 
 @router.get("/leaderboard")
@@ -178,6 +191,31 @@ def leaderboard(
             avatar_hash=identity.avatar_hash,
         )
     return svc.leaderboard(guild)
+
+
+@router.post("/v1/leaderboard")
+def leaderboard_filtered(
+    body: LeaderboardBody,
+    uid: str | None = Depends(optional_user_id),
+    guild: str = Depends(guild_header),
+    identity: Identity = Depends(identity_headers),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Top 10 among ``guild_member_ids`` when provided (POST body avoids huge query strings)."""
+    svc = DuckGameService(db, settings)
+    if uid:
+        svc.cache_user_identity(
+            guild,
+            uid,
+            username=identity.username,
+            global_name=identity.global_name,
+            avatar_hash=identity.avatar_hash,
+        )
+    eligible: set[str] | None = None
+    if body.guild_member_ids is not None:
+        eligible = {str(i) for i in body.guild_member_ids}
+    return svc.leaderboard(guild, eligible_user_ids=eligible)
 
 
 @router.post("/v1/ducks/give")
